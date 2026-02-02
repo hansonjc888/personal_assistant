@@ -1,0 +1,462 @@
+{
+  "name": "Workflow B - Command Executor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "seconds",
+              "secondsInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Cron Every 10s",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM commands WHERE status='pending' ORDER BY created_at ASC LIMIT 1",
+        "options": {}
+      },
+      "id": "fetch-command",
+      "name": "Fetch Pending Command",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-db",
+          "name": "Task Assistant DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.id }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "has-command",
+      "name": "Has Command?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE commands SET status='processing', updated_at=CURRENT_TIMESTAMP WHERE id=:id",
+        "options": {
+          "queryParameters": {
+            "id": "={{ $json.id }}"
+          }
+        }
+      },
+      "id": "mark-processing",
+      "name": "Mark as Processing",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [850, 200],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-db",
+          "name": "Task Assistant DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse command payload and prepare for routing\nconst command = $input.item.json;\nconst payload = JSON.parse(command.payload_json);\n\nreturn {\n  command_id: command.id,\n  command_type: command.type,\n  user_id: command.user_id,\n  payload: payload,\n  telegram_chat_id: payload.telegram_chat_id,\n  telegram_message_id: payload.telegram_message_id\n};"
+      },
+      "id": "parse-command",
+      "name": "Parse Command",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 200]
+    },
+    {
+      "parameters": {
+        "dataPropertyName": "data",
+        "rules": {
+          "rules": [
+            {
+              "value": "draft_task_from_text",
+              "output": 0
+            },
+            {
+              "value": "confirm_draft",
+              "output": 1
+            },
+            {
+              "value": "cancel_draft",
+              "output": 2
+            },
+            {
+              "value": "edit_draft",
+              "output": 3
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": 4
+        }
+      },
+      "id": "switch-by-type",
+      "name": "Switch by Command Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [1250, 200]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.WORKFLOW_D_ID }}",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "call-task-drafting",
+      "name": "Call Task Drafting",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1450, 100]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.WORKFLOW_E_ID }}",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "call-confirmation",
+      "name": "Call Confirmation & Execution",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1450, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Handle cancel_draft command\nconst payload = $input.item.json.payload;\n\n// Extract draft ID from callback data or recent draft\nconst draftId = payload.parameters?.draft_id;\n\nif (!draftId) {\n  return {\n    success: false,\n    error: 'No draft ID provided'\n  };\n}\n\nreturn {\n  draft_id: draftId,\n  telegram_chat_id: $input.item.json.telegram_chat_id,\n  success: true\n};"
+      },
+      "id": "handle-cancel",
+      "name": "Handle Cancel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Handle edit_draft command\nconst payload = $input.item.json.payload;\n\nreturn {\n  draft_id: payload.parameters?.draft_id,\n  edit_text: payload.parameters?.edit_text,\n  telegram_chat_id: $input.item.json.telegram_chat_id,\n  success: true\n};"
+      },
+      "id": "handle-edit",
+      "name": "Handle Edit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 400]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.telegram_chat_id }}",
+        "text": "I didn't understand that command. Try asking me to create a task!",
+        "additionalFields": {}
+      },
+      "id": "send-unknown",
+      "name": "Send Unknown Response",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1450, 500],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-bot",
+          "name": "Task Assistant Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE commands SET status=:status, updated_at=CURRENT_TIMESTAMP WHERE id=:id",
+        "options": {
+          "queryParameters": {
+            "id": "={{ $node['Parse Command'].json.command_id }}",
+            "status": "={{ $json.success ? 'completed' : 'failed' }}"
+          }
+        }
+      },
+      "id": "update-status",
+      "name": "Update Command Status",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [1650, 200],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-db",
+          "name": "Task Assistant DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "audit_log",
+        "columns": "action, entity_type, entity_id, details_json",
+        "options": {
+          "queryParameters": {
+            "action": "command_executed",
+            "entity_type": "command",
+            "entity_id": "={{ $node['Parse Command'].json.command_id }}",
+            "details_json": "={{ JSON.stringify({status: $json.success ? 'completed' : 'failed', result: $json}) }}"
+          }
+        }
+      },
+      "id": "audit-execution",
+      "name": "Audit Execution",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [1850, 200],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-db",
+          "name": "Task Assistant DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE drafts SET status='cancelled' WHERE id=:draft_id",
+        "options": {
+          "queryParameters": {
+            "draft_id": "={{ $json.draft_id }}"
+          }
+        }
+      },
+      "id": "cancel-draft-db",
+      "name": "Cancel Draft in DB",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [1650, 300],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-db",
+          "name": "Task Assistant DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.telegram_chat_id }}",
+        "text": "Draft cancelled ❌",
+        "additionalFields": {}
+      },
+      "id": "send-cancel-confirm",
+      "name": "Send Cancel Confirmation",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1850, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-bot",
+          "name": "Task Assistant Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Cron Every 10s": {
+      "main": [
+        [
+          {
+            "node": "Fetch Pending Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Pending Command": {
+      "main": [
+        [
+          {
+            "node": "Has Command?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Command?": {
+      "main": [
+        [
+          {
+            "node": "Mark as Processing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark as Processing": {
+      "main": [
+        [
+          {
+            "node": "Parse Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Command": {
+      "main": [
+        [
+          {
+            "node": "Switch by Command Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch by Command Type": {
+      "main": [
+        [
+          {
+            "node": "Call Task Drafting",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Confirmation & Execution",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Cancel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Edit",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Unknown Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Task Drafting": {
+      "main": [
+        [
+          {
+            "node": "Update Command Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Confirmation & Execution": {
+      "main": [
+        [
+          {
+            "node": "Update Command Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Cancel": {
+      "main": [
+        [
+          {
+            "node": "Cancel Draft in DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Edit": {
+      "main": [
+        [
+          {
+            "node": "Update Command Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Unknown Response": {
+      "main": [
+        [
+          {
+            "node": "Update Command Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Command Status": {
+      "main": [
+        [
+          {
+            "node": "Audit Execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancel Draft in DB": {
+      "main": [
+        [
+          {
+            "node": "Send Cancel Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Cancel Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Update Command Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -1,0 +1,367 @@
+{
+  "name": "Workflow D - WhatsApp Task Drafting",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "workflow-trigger",
+      "name": "Workflow Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Extract command data\nconst command = $input.item.json;\nconst payload = command.payload || command;\n\nreturn {\n  user_id: command.user_id || 'default_user',\n  task_description: payload.parameters?.task_description || payload.original_text,\n  mentioned_due_date: payload.parameters?.mentioned_due_date,\n  priority_indicators: payload.parameters?.priority_indicators || [],\n  whatsapp_phone: payload.whatsapp_phone,\n  whatsapp_message_id: payload.whatsapp_message_id,\n  business_phone_id: payload.business_phone_id,\n  current_date: new Date().toISOString().split('T')[0]\n};"
+      },
+      "id": "extract-data",
+      "name": "Extract Command Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Build Gemini prompt for task structuring\nconst data = $input.item.json;\n\nconst prompt = `You are a task planning assistant.\n\nOriginal request: ${data.task_description}\nMentioned due date: ${data.mentioned_due_date || 'none'}\nPriority indicators: ${data.priority_indicators.join(', ') || 'none'}\nCurrent date: ${data.current_date}\n\nOutput STRICT JSON:\n{\n  \"title\": \"string (clear, actionable task title, max 100 chars)\",\n  \"due_date\": \"YYYY-MM-DD or null\",\n  \"due_date_reasoning\": \"string (explain if suggested or user-mentioned)\",\n  \"notes\": \"string (additional context, optional)\",\n  \"suggested_subtasks\": [\n    {\"title\": \"string\", \"estimated_effort\": \"S|M|L\"}\n  ],\n  \"clarification_needed\": \"string or null (ask ONE question if critical info missing)\"\n}\n\nRules:\n- Temperature: 0.3\n- If due date mentioned, validate it's in the future\n- Suggest realistic subtasks (max 5, only if task is complex)\n- Keep title concise and actionable\n- Only ask for clarification if absolutely necessary\n- Effort levels: S (< 30 min), M (30min - 2hr), L (> 2hr)`;\n\nreturn {\n  gemini_prompt: prompt,\n  ...data\n};"
+      },
+      "id": "build-task-prompt",
+      "name": "Build Task Structuring Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "application/json",
+        "body": "={{ {\"contents\": [{\"parts\": [{\"text\": $json.gemini_prompt}]}], \"generationConfig\": {\"temperature\": 0.3, \"responseMimeType\": \"application/json\"}} }}",
+        "options": {}
+      },
+      "id": "gemini-structurer",
+      "name": "Gemini Task Structurer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Gemini response\nconst response = $input.item.json;\nconst taskData = JSON.parse(response.candidates[0].content.parts[0].text);\n\nconst prevData = $node['Extract Command Data'].json;\n\n// Build draft JSON\nconst draftJson = {\n  title: taskData.title,\n  due_date: taskData.due_date,\n  due_date_reasoning: taskData.due_date_reasoning,\n  notes: taskData.notes || '',\n  suggested_subtasks: taskData.suggested_subtasks || [],\n  priority_indicators: prevData.priority_indicators,\n  source: 'gemini_structured'\n};\n\nreturn {\n  draft_json: JSON.stringify(draftJson),\n  user_id: prevData.user_id,\n  whatsapp_phone: prevData.whatsapp_phone,\n  whatsapp_message_id: prevData.whatsapp_message_id,\n  business_phone_id: prevData.business_phone_id,\n  clarification_needed: taskData.clarification_needed,\n  task_data: taskData\n};"
+      },
+      "id": "parse-task",
+      "name": "Parse Task Structure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.clarification_needed }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "needs-clarification",
+      "name": "Needs Clarification?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Send clarification question via WhatsApp\nconst data = $input.item.json;\n\nreturn {\n  business_phone_id: data.business_phone_id,\n  recipient_phone: data.whatsapp_phone,\n  message: data.clarification_needed\n};"
+      },
+      "id": "prepare-clarification",
+      "name": "Prepare Clarification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 400]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://graph.facebook.com/v18.0/' + $json.business_phone_id + '/messages' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "application/json",
+        "body": "={{ {\"messaging_product\": \"whatsapp\", \"to\": $json.recipient_phone, \"type\": \"text\", \"text\": {\"body\": $json.message}} }}",
+        "options": {}
+      },
+      "id": "ask-clarification",
+      "name": "Ask Clarification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1650, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "whatsapp-api",
+          "name": "WhatsApp Business API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "drafts",
+        "columns": "user_id, draft_type, draft_json, status, source_message_id",
+        "options": {
+          "queryParameters": {
+            "user_id": "={{ $json.user_id }}",
+            "draft_type": "task",
+            "draft_json": "={{ $json.draft_json }}",
+            "status": "drafted",
+            "source_message_id": "={{ $json.whatsapp_message_id }}"
+          }
+        }
+      },
+      "id": "create-draft",
+      "name": "Create Draft Record",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [1450, 200],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-db",
+          "name": "Task Assistant DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Format confirmation message for WhatsApp\nconst taskData = $node['Parse Task Structure'].json.task_data;\nconst draftId = $input.item.json.lastID;\n\n// Format due date\nlet dueDateText = 'No due date';\nif (taskData.due_date) {\n  const date = new Date(taskData.due_date);\n  const options = { month: 'short', day: 'numeric', year: 'numeric' };\n  dueDateText = date.toLocaleDateString('en-US', options);\n  if (taskData.due_date_reasoning) {\n    dueDateText += ` (${taskData.due_date_reasoning})`;\n  }\n}\n\n// Format subtasks\nlet subtasksText = '';\nif (taskData.suggested_subtasks && taskData.suggested_subtasks.length > 0) {\n  subtasksText = '\\n\\nSuggested subtasks:';\n  taskData.suggested_subtasks.forEach(st => {\n    subtasksText += `\\n • ${st.title} (${st.estimated_effort})`;\n  });\n}\n\n// Build message\nconst message = `📝 *Task Draft*\\n\\n*Title:* ${taskData.title}\\n*Due:* ${dueDateText}${taskData.notes ? '\\n*Notes:* ' + taskData.notes : ''}${subtasksText}`;\n\nreturn {\n  draft_id: draftId,\n  message: message,\n  business_phone_id: $node['Parse Task Structure'].json.business_phone_id,\n  recipient_phone: $node['Parse Task Structure'].json.whatsapp_phone\n};"
+      },
+      "id": "format-message",
+      "name": "Format Confirmation Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 200]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://graph.facebook.com/v18.0/' + $json.business_phone_id + '/messages' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "application/json",
+        "body": "={{ {\n  \"messaging_product\": \"whatsapp\",\n  \"recipient_type\": \"individual\",\n  \"to\": $json.recipient_phone,\n  \"type\": \"interactive\",\n  \"interactive\": {\n    \"type\": \"button\",\n    \"body\": {\n      \"text\": $json.message\n    },\n    \"action\": {\n      \"buttons\": [\n        {\n          \"type\": \"reply\",\n          \"reply\": {\n            \"id\": \"confirm_draft:\" + $json.draft_id,\n            \"title\": \"✅ Confirm\"\n          }\n        },\n        {\n          \"type\": \"reply\",\n          \"reply\": {\n            \"id\": \"cancel_draft:\" + $json.draft_id,\n            \"title\": \"❌ Cancel\"\n          }\n        }\n      ]\n    }\n  }\n} }}",
+        "options": {}
+      },
+      "id": "send-confirmation",
+      "name": "Send Confirmation Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1850, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "whatsapp-api",
+          "name": "WhatsApp Business API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "audit_log",
+        "columns": "action, entity_type, entity_id, source_message_id, details_json",
+        "options": {
+          "queryParameters": {
+            "action": "draft_created",
+            "entity_type": "draft",
+            "entity_id": "={{ $node['Create Draft Record'].json.lastID }}",
+            "source_message_id": "={{ $node['Parse Task Structure'].json.whatsapp_message_id }}",
+            "details_json": "={{ $node['Parse Task Structure'].json.draft_json }}"
+          }
+        }
+      },
+      "id": "audit-draft",
+      "name": "Audit Draft Creation",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [2050, 200],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-db",
+          "name": "Task Assistant DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "return { success: true, draft_id: $node['Create Draft Record'].json.lastID };"
+      },
+      "id": "return-success",
+      "name": "Return Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2250, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "return { success: true, clarification_requested: true };"
+      },
+      "id": "return-clarification",
+      "name": "Return Clarification Requested",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 400]
+    }
+  ],
+  "connections": {
+    "Workflow Called": {
+      "main": [
+        [
+          {
+            "node": "Extract Command Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Command Data": {
+      "main": [
+        [
+          {
+            "node": "Build Task Structuring Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Task Structuring Prompt": {
+      "main": [
+        [
+          {
+            "node": "Gemini Task Structurer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Task Structurer": {
+      "main": [
+        [
+          {
+            "node": "Parse Task Structure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Task Structure": {
+      "main": [
+        [
+          {
+            "node": "Needs Clarification?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Clarification?": {
+      "main": [
+        [
+          {
+            "node": "Create Draft Record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Clarification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Clarification": {
+      "main": [
+        [
+          {
+            "node": "Ask Clarification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask Clarification": {
+      "main": [
+        [
+          {
+            "node": "Return Clarification Requested",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Draft Record": {
+      "main": [
+        [
+          {
+            "node": "Format Confirmation Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Confirmation Message": {
+      "main": [
+        [
+          {
+            "node": "Send Confirmation Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Confirmation Message": {
+      "main": [
+        [
+          {
+            "node": "Audit Draft Creation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Draft Creation": {
+      "main": [
+        [
+          {
+            "node": "Return Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

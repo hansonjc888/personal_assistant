@@ -1,0 +1,703 @@
+{
+  "name": "Workflow E - Confirmation & Execution",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "workflow-trigger",
+      "name": "Workflow Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Extract draft ID from command payload\nconst command = $input.item.json;\nconst payload = command.payload || command;\n\n// Extract draft ID from callback data (format: \"confirm_draft:123\")\nlet draftId = payload.parameters?.draft_id;\n\nif (!draftId && payload.callback_data) {\n  const parts = payload.callback_data.split(':');\n  if (parts.length === 2) {\n    draftId = parseInt(parts[1]);\n  }\n}\n\nreturn {\n  draft_id: draftId,\n  user_id: command.user_id || 'default_user',\n  telegram_chat_id: payload.telegram_chat_id\n};"
+      },
+      "id": "extract-draft-id",
+      "name": "Extract Draft ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM drafts WHERE id=:draft_id AND status='drafted'",
+        "options": {
+          "queryParameters": {
+            "draft_id": "={{ $json.draft_id }}"
+          }
+        }
+      },
+      "id": "fetch-draft",
+      "name": "Fetch Draft",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-db",
+          "name": "Task Assistant DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.id }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "draft-exists",
+      "name": "Draft Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse draft JSON\nconst draft = $input.item.json;\nconst draftData = JSON.parse(draft.draft_json);\n\nreturn {\n  draft_id: draft.id,\n  user_id: draft.user_id,\n  draft_type: draft.draft_type,\n  task_data: draftData,\n  telegram_chat_id: $node['Extract Draft ID'].json.telegram_chat_id\n};"
+      },
+      "id": "parse-draft",
+      "name": "Parse Draft Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 200]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE drafts SET status='confirmed' WHERE id=:draft_id",
+        "options": {
+          "queryParameters": {
+            "draft_id": "={{ $json.draft_id }}"
+          }
+        }
+      },
+      "id": "mark-confirmed",
+      "name": "Mark Draft as Confirmed",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [1250, 200],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-db",
+          "name": "Task Assistant DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Validate draft completeness\nconst taskData = $node['Parse Draft Data'].json.task_data;\n\nconst validation = {\n  is_valid: true,\n  errors: []\n};\n\nif (!taskData.title || taskData.title.trim() === '') {\n  validation.is_valid = false;\n  validation.errors.push('Task title is missing');\n}\n\nif (taskData.title && taskData.title.length > 200) {\n  validation.is_valid = false;\n  validation.errors.push('Task title too long (max 200 chars)');\n}\n\n// Validate due date format if present\nif (taskData.due_date) {\n  const dateRegex = /^\\d{4}-\\d{2}-\\d{2}$/;\n  if (!dateRegex.test(taskData.due_date)) {\n    validation.is_valid = false;\n    validation.errors.push('Invalid due date format (must be YYYY-MM-DD)');\n  }\n}\n\nreturn {\n  ...($node['Parse Draft Data'].json),\n  validation: validation\n};"
+      },
+      "id": "validate-draft",
+      "name": "Validate Draft Completeness",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.validation.is_valid }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "is-valid",
+      "name": "Is Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1650, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Build Google Tasks API request\nconst taskData = $node['Validate Draft Completeness'].json.task_data;\n\nconst taskRequest = {\n  title: taskData.title\n};\n\n// Add due date if present (must be RFC 3339 format)\nif (taskData.due_date) {\n  taskRequest.due = taskData.due_date + 'T00:00:00.000Z';\n}\n\n// Add notes with metadata\nlet notes = taskData.notes || '';\nif (taskData.due_date_reasoning) {\n  notes += (notes ? '\\n\\n' : '') + 'Due date reasoning: ' + taskData.due_date_reasoning;\n}\nnotes += '\\n\\nCreated by AI Assistant';\ntaskRequest.notes = notes;\n\nreturn {\n  task_request: taskRequest,\n  draft_id: $node['Validate Draft Completeness'].json.draft_id,\n  subtasks: taskData.suggested_subtasks || [],\n  telegram_chat_id: $node['Validate Draft Completeness'].json.telegram_chat_id\n};"
+      },
+      "id": "build-task-request",
+      "name": "Build Google Tasks Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 100]
+    },
+    {
+      "parameters": {
+        "url": "https://tasks.googleapis.com/tasks/v1/lists/@default/tasks",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleTasksOAuth2Api",
+        "sendBody": true,
+        "contentType": "application/json",
+        "body": "={{ JSON.stringify($json.task_request) }}",
+        "options": {}
+      },
+      "id": "create-main-task",
+      "name": "Create Main Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2050, 100],
+      "credentials": {
+        "googleTasksOAuth2Api": {
+          "id": "google-tasks",
+          "name": "Google Tasks"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Check if there are subtasks to create\nconst subtasks = $node['Build Google Tasks Request'].json.subtasks;\nconst mainTaskId = $input.item.json.id;\n\nif (!subtasks || subtasks.length === 0) {\n  return {\n    has_subtasks: false,\n    main_task_id: mainTaskId,\n    main_task_response: $input.item.json\n  };\n}\n\nreturn {\n  has_subtasks: true,\n  main_task_id: mainTaskId,\n  main_task_response: $input.item.json,\n  subtasks: subtasks\n};"
+      },
+      "id": "check-subtasks",
+      "name": "Has Subtasks?",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2250, 100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.has_subtasks }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "subtasks-condition",
+      "name": "Create Subtasks?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2450, 100]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-subtasks",
+      "name": "Split Subtasks",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [2650, 100]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Get current subtask from loop\nconst subtasks = $node['Has Subtasks?'].json.subtasks;\nconst context = $input.context;\nconst currentIndex = context.nodesExecuted.filter(n => n === 'Split Subtasks').length - 1;\nconst subtask = subtasks[currentIndex];\nconst mainTaskId = $node['Has Subtasks?'].json.main_task_id;\n\nconst subtaskRequest = {\n  title: `${subtask.title} [${subtask.estimated_effort}]`,\n  parent: mainTaskId\n};\n\nreturn {\n  subtask_request: subtaskRequest,\n  main_task_id: mainTaskId\n};"
+      },
+      "id": "build-subtask",
+      "name": "Build Subtask Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2850, 100]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://tasks.googleapis.com/tasks/v1/lists/@default/tasks' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleTasksOAuth2Api",
+        "sendBody": true,
+        "contentType": "application/json",
+        "body": "={{ JSON.stringify($json.subtask_request) }}",
+        "options": {}
+      },
+      "id": "create-subtask",
+      "name": "Create Subtask",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [3050, 100],
+      "credentials": {
+        "googleTasksOAuth2Api": {
+          "id": "google-tasks",
+          "name": "Google Tasks"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "executions",
+        "columns": "draft_id, result_json, status, executed_at",
+        "options": {
+          "queryParameters": {
+            "draft_id": "={{ $node['Build Google Tasks Request'].json.draft_id }}",
+            "result_json": "={{ JSON.stringify($node['Has Subtasks?'].json.main_task_response) }}",
+            "status": "success",
+            "executed_at": "={{ new Date().toISOString() }}"
+          }
+        }
+      },
+      "id": "record-execution",
+      "name": "Record Execution",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [2650, 300],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-db",
+          "name": "Task Assistant DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE drafts SET status='executed' WHERE id=:draft_id",
+        "options": {
+          "queryParameters": {
+            "draft_id": "={{ $node['Build Google Tasks Request'].json.draft_id }}"
+          }
+        }
+      },
+      "id": "mark-executed",
+      "name": "Mark Draft as Executed",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [2850, 300],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-db",
+          "name": "Task Assistant DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Build success confirmation message\nconst mainTask = $node['Has Subtasks?'].json.main_task_response;\nconst taskLink = mainTask.selfLink || 'Google Tasks';\n\nconst message = `✅ Task created successfully!\\n\\nTitle: ${mainTask.title}\\n\\nYou can view it in your Google Tasks app.`;\n\nreturn {\n  message: message,\n  telegram_chat_id: $node['Build Google Tasks Request'].json.telegram_chat_id,\n  task_id: mainTask.id\n};"
+      },
+      "id": "format-success",
+      "name": "Format Success Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3050, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.telegram_chat_id }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {}
+      },
+      "id": "send-success",
+      "name": "Send Success Confirmation",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [3250, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-bot",
+          "name": "Task Assistant Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "audit_log",
+        "columns": "action, entity_type, entity_id, details_json",
+        "options": {
+          "queryParameters": {
+            "action": "task_executed",
+            "entity_type": "execution",
+            "entity_id": "={{ $node['Record Execution'].json.lastID }}",
+            "details_json": "={{ JSON.stringify({task_id: $node['Format Success Message'].json.task_id}) }}"
+          }
+        }
+      },
+      "id": "audit-execution",
+      "name": "Audit Execution",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [3450, 300],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-db",
+          "name": "Task Assistant DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "return { success: true, task_id: $node['Format Success Message'].json.task_id };"
+      },
+      "id": "return-success",
+      "name": "Return Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3650, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $node['Extract Draft ID'].json.telegram_chat_id }}",
+        "text": "Draft not found or already processed. Please create a new task.",
+        "additionalFields": {}
+      },
+      "id": "send-not-found",
+      "name": "Send Not Found Error",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1050, 400],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-bot",
+          "name": "Task Assistant Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "return { success: false, error: 'draft_not_found' };"
+      },
+      "id": "return-not-found",
+      "name": "Return Not Found",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 400]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $node['Validate Draft Completeness'].json.telegram_chat_id }}",
+        "text": "={{ 'Validation failed: ' + $json.validation.errors.join(', ') }}",
+        "additionalFields": {}
+      },
+      "id": "send-validation-error",
+      "name": "Send Validation Error",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1850, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-bot",
+          "name": "Task Assistant Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "executions",
+        "columns": "draft_id, status, error_message, executed_at",
+        "options": {
+          "queryParameters": {
+            "draft_id": "={{ $node['Validate Draft Completeness'].json.draft_id }}",
+            "status": "failed",
+            "error_message": "={{ $node['Validate Draft Completeness'].json.validation.errors.join(', ') }}",
+            "executed_at": "={{ new Date().toISOString() }}"
+          }
+        }
+      },
+      "id": "record-failure",
+      "name": "Record Validation Failure",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [2050, 300],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-db",
+          "name": "Task Assistant DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "return { success: false, error: 'validation_failed', details: $node['Validate Draft Completeness'].json.validation.errors };"
+      },
+      "id": "return-validation-error",
+      "name": "Return Validation Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2250, 300]
+    }
+  ],
+  "connections": {
+    "Workflow Called": {
+      "main": [
+        [
+          {
+            "node": "Extract Draft ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Draft ID": {
+      "main": [
+        [
+          {
+            "node": "Fetch Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Draft": {
+      "main": [
+        [
+          {
+            "node": "Draft Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Exists?": {
+      "main": [
+        [
+          {
+            "node": "Parse Draft Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Not Found Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Draft Data": {
+      "main": [
+        [
+          {
+            "node": "Mark Draft as Confirmed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Draft as Confirmed": {
+      "main": [
+        [
+          {
+            "node": "Validate Draft Completeness",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Draft Completeness": {
+      "main": [
+        [
+          {
+            "node": "Is Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Valid?": {
+      "main": [
+        [
+          {
+            "node": "Build Google Tasks Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Validation Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Google Tasks Request": {
+      "main": [
+        [
+          {
+            "node": "Create Main Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Main Task": {
+      "main": [
+        [
+          {
+            "node": "Has Subtasks?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Subtasks?": {
+      "main": [
+        [
+          {
+            "node": "Create Subtasks?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Subtasks?": {
+      "main": [
+        [
+          {
+            "node": "Split Subtasks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Subtasks": {
+      "main": [
+        [
+          {
+            "node": "Build Subtask Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Subtask Request": {
+      "main": [
+        [
+          {
+            "node": "Create Subtask",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Subtask": {
+      "main": [
+        [
+          {
+            "node": "Split Subtasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Execution": {
+      "main": [
+        [
+          {
+            "node": "Mark Draft as Executed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Draft as Executed": {
+      "main": [
+        [
+          {
+            "node": "Format Success Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Success Message": {
+      "main": [
+        [
+          {
+            "node": "Send Success Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Success Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Audit Execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Execution": {
+      "main": [
+        [
+          {
+            "node": "Return Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Not Found Error": {
+      "main": [
+        [
+          {
+            "node": "Return Not Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Validation Error": {
+      "main": [
+        [
+          {
+            "node": "Record Validation Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Validation Failure": {
+      "main": [
+        [
+          {
+            "node": "Return Validation Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
