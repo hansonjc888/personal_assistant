@@ -119,28 +119,29 @@
     },
     {
       "parameters": {
-        "functionCode": "// Build Google Tasks API request\nconst taskData = $node['Validate Draft Completeness'].json.task_data;\n\nconst taskRequest = {\n  title: taskData.title\n};\n\n// Add due date if present (must be RFC 3339 format)\nif (taskData.due_date) {\n  taskRequest.due = taskData.due_date + 'T00:00:00.000Z';\n}\n\n// Add notes with metadata\nlet notes = taskData.notes || '';\nif (taskData.due_date_reasoning) {\n  notes += (notes ? '\\n\\n' : '') + 'Due date reasoning: ' + taskData.due_date_reasoning;\n}\nnotes += '\\n\\nCreated by AI Assistant';\ntaskRequest.notes = notes;\n\nreturn {\n  task_request: taskRequest,\n  draft_id: $node['Validate Draft Completeness'].json.draft_id,\n  subtasks: taskData.suggested_subtasks || [],\n  telegram_chat_id: $node['Validate Draft Completeness'].json.telegram_chat_id\n};"
+        "functionCode": "// Prepare task data for native node\nconst taskData = $node['Validate Draft Completeness'].json.task_data;\n\n// Build notes with metadata\nlet notes = taskData.notes || '';\nif (taskData.due_date_reasoning) {\n  notes += (notes ? '\\n\\n' : '') + 'Due date reasoning: ' + taskData.due_date_reasoning;\n}\nnotes += '\\n\\nCreated by AI Assistant';\n\nreturn {\n  draft_id: $node['Validate Draft Completeness'].json.draft_id,\n  title: taskData.title,\n  due_date: taskData.due_date,\n  notes: notes,\n  subtasks: taskData.suggested_subtasks || [],\n  telegram_chat_id: $node['Validate Draft Completeness'].json.telegram_chat_id\n};"
       },
-      "id": "build-task-request",
-      "name": "Build Google Tasks Request",
+      "id": "prepare-task-data",
+      "name": "Prepare Task Data",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [1850, 100]
     },
     {
       "parameters": {
-        "url": "https://tasks.googleapis.com/tasks/v1/lists/@default/tasks",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "googleTasksOAuth2Api",
-        "sendBody": true,
-        "contentType": "application/json",
-        "body": "={{ JSON.stringify($json.task_request) }}",
-        "options": {}
+        "resource": "task",
+        "operation": "create",
+        "task": "@default",
+        "title": "={{ $json.title }}",
+        "additionalFields": {
+          "dueDate": "={{ $json.due_date ? $json.due_date + 'T00:00:00.000Z' : undefined }}",
+          "notes": "={{ $json.notes }}"
+        }
       },
       "id": "create-main-task",
       "name": "Create Main Task",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
+      "type": "n8n-nodes-base.googleTasks",
+      "typeVersion": 1,
       "position": [2050, 100],
       "credentials": {
         "googleTasksOAuth2Api": {
@@ -151,7 +152,7 @@
     },
     {
       "parameters": {
-        "functionCode": "// Check if there are subtasks to create\nconst subtasks = $node['Build Google Tasks Request'].json.subtasks;\nconst mainTaskId = $input.item.json.id;\n\nif (!subtasks || subtasks.length === 0) {\n  return {\n    has_subtasks: false,\n    main_task_id: mainTaskId,\n    main_task_response: $input.item.json\n  };\n}\n\nreturn {\n  has_subtasks: true,\n  main_task_id: mainTaskId,\n  main_task_response: $input.item.json,\n  subtasks: subtasks\n};"
+        "functionCode": "// Check if there are subtasks to create\nconst subtasks = $node['Prepare Task Data'].json.subtasks;\nconst mainTaskId = $input.item.json.id;\n\nif (!subtasks || subtasks.length === 0) {\n  return {\n    has_subtasks: false,\n    main_task_id: mainTaskId,\n    main_task_response: $input.item.json\n  };\n}\n\nreturn {\n  has_subtasks: true,\n  main_task_id: mainTaskId,\n  main_task_response: $input.item.json,\n  subtasks: subtasks\n};"
       },
       "id": "check-subtasks",
       "name": "Has Subtasks?",
@@ -189,28 +190,28 @@
     },
     {
       "parameters": {
-        "functionCode": "// Get current subtask from loop\nconst subtasks = $node['Has Subtasks?'].json.subtasks;\nconst context = $input.context;\nconst currentIndex = context.nodesExecuted.filter(n => n === 'Split Subtasks').length - 1;\nconst subtask = subtasks[currentIndex];\nconst mainTaskId = $node['Has Subtasks?'].json.main_task_id;\n\nconst subtaskRequest = {\n  title: `${subtask.title} [${subtask.estimated_effort}]`,\n  parent: mainTaskId\n};\n\nreturn {\n  subtask_request: subtaskRequest,\n  main_task_id: mainTaskId\n};"
+        "functionCode": "// Get current subtask from loop\nconst subtasks = $node['Has Subtasks?'].json.subtasks;\nconst context = $input.context;\nconst currentIndex = context.nodesExecuted.filter(n => n === 'Split Subtasks').length - 1;\nconst subtask = subtasks[currentIndex];\nconst mainTaskId = $node['Has Subtasks?'].json.main_task_id;\n\nreturn {\n  subtask_title: `${subtask.title} [${subtask.estimated_effort}]`,\n  main_task_id: mainTaskId\n};"
       },
-      "id": "build-subtask",
-      "name": "Build Subtask Request",
+      "id": "prepare-subtask",
+      "name": "Prepare Subtask Data",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [2850, 100]
     },
     {
       "parameters": {
-        "url": "={{ 'https://tasks.googleapis.com/tasks/v1/lists/@default/tasks' }}",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "googleTasksOAuth2Api",
-        "sendBody": true,
-        "contentType": "application/json",
-        "body": "={{ JSON.stringify($json.subtask_request) }}",
-        "options": {}
+        "resource": "task",
+        "operation": "create",
+        "task": "@default",
+        "title": "={{ $json.subtask_title }}",
+        "additionalFields": {
+          "parent": "={{ $json.main_task_id }}"
+        }
       },
       "id": "create-subtask",
       "name": "Create Subtask",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
+      "type": "n8n-nodes-base.googleTasks",
+      "typeVersion": 1,
       "position": [3050, 100],
       "credentials": {
         "googleTasksOAuth2Api": {
@@ -226,7 +227,7 @@
         "columns": "draft_id, result_json, status, executed_at",
         "options": {
           "queryParameters": {
-            "draft_id": "={{ $node['Build Google Tasks Request'].json.draft_id }}",
+            "draft_id": "={{ $node['Prepare Task Data'].json.draft_id }}",
             "result_json": "={{ JSON.stringify($node['Has Subtasks?'].json.main_task_response) }}",
             "status": "success",
             "executed_at": "={{ new Date().toISOString() }}"
@@ -251,7 +252,7 @@
         "query": "UPDATE drafts SET status='executed' WHERE id=:draft_id",
         "options": {
           "queryParameters": {
-            "draft_id": "={{ $node['Build Google Tasks Request'].json.draft_id }}"
+            "draft_id": "={{ $node['Prepare Task Data'].json.draft_id }}"
           }
         }
       },
@@ -269,7 +270,7 @@
     },
     {
       "parameters": {
-        "functionCode": "// Build success confirmation message\nconst mainTask = $node['Has Subtasks?'].json.main_task_response;\nconst taskLink = mainTask.selfLink || 'Google Tasks';\n\nconst message = `✅ Task created successfully!\\n\\nTitle: ${mainTask.title}\\n\\nYou can view it in your Google Tasks app.`;\n\nreturn {\n  message: message,\n  telegram_chat_id: $node['Build Google Tasks Request'].json.telegram_chat_id,\n  task_id: mainTask.id\n};"
+        "functionCode": "// Build success confirmation message\nconst mainTask = $node['Has Subtasks?'].json.main_task_response;\nconst taskLink = mainTask.selfLink || 'Google Tasks';\n\nconst message = `✅ Task created successfully!\\n\\nTitle: ${mainTask.title}\\n\\nYou can view it in your Google Tasks app.`;\n\nreturn {\n  message: message,\n  telegram_chat_id: $node['Prepare Task Data'].json.telegram_chat_id,\n  task_id: mainTask.id\n};"
       },
       "id": "format-success",
       "name": "Format Success Message",
@@ -503,7 +504,7 @@
       "main": [
         [
           {
-            "node": "Build Google Tasks Request",
+            "node": "Prepare Task Data",
             "type": "main",
             "index": 0
           }
@@ -517,7 +518,7 @@
         ]
       ]
     },
-    "Build Google Tasks Request": {
+    "Prepare Task Data": {
       "main": [
         [
           {
@@ -572,7 +573,7 @@
       "main": [
         [
           {
-            "node": "Build Subtask Request",
+            "node": "Prepare Subtask Data",
             "type": "main",
             "index": 0
           }
@@ -586,7 +587,7 @@
         ]
       ]
     },
-    "Build Subtask Request": {
+    "Prepare Subtask Data": {
       "main": [
         [
           {

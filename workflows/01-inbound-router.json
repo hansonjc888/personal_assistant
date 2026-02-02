@@ -17,12 +17,66 @@
     },
     {
       "parameters": {
-        "functionCode": "// Extract message details from Telegram update\nconst update = $input.item.json;\n\n// Handle both message and callback_query (for button presses)\nconst message = update.message || update.callback_query?.message;\nconst from = update.message?.from || update.callback_query?.from;\nconst text = update.message?.text || update.callback_query?.data;\n\nreturn {\n  telegram_message_id: message?.message_id?.toString(),\n  telegram_chat_id: message?.chat?.id?.toString(),\n  user_id: from?.id?.toString() || 'default_user',\n  username: from?.username,\n  text: text,\n  is_callback: !!update.callback_query,\n  callback_data: update.callback_query?.data,\n  timestamp: new Date().toISOString()\n};"
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "telegram_message_id",
+              "name": "telegram_message_id",
+              "value": "={{ ($json.message?.message_id || $json.callback_query?.message?.message_id)?.toString() }}",
+              "type": "string"
+            },
+            {
+              "id": "telegram_chat_id",
+              "name": "telegram_chat_id",
+              "value": "={{ ($json.message?.chat?.id || $json.callback_query?.message?.chat?.id)?.toString() }}",
+              "type": "string"
+            },
+            {
+              "id": "user_id",
+              "name": "user_id",
+              "value": "={{ ($json.message?.from?.id || $json.callback_query?.from?.id)?.toString() || 'default_user' }}",
+              "type": "string"
+            },
+            {
+              "id": "username",
+              "name": "username",
+              "value": "={{ $json.message?.from?.username || $json.callback_query?.from?.username }}",
+              "type": "string"
+            },
+            {
+              "id": "text",
+              "name": "text",
+              "value": "={{ $json.message?.text || $json.callback_query?.data }}",
+              "type": "string"
+            },
+            {
+              "id": "is_callback",
+              "name": "is_callback",
+              "value": "={{ !!$json.callback_query }}",
+              "type": "boolean"
+            },
+            {
+              "id": "callback_data",
+              "name": "callback_data",
+              "value": "={{ $json.callback_query?.data }}",
+              "type": "string"
+            },
+            {
+              "id": "timestamp",
+              "name": "timestamp",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
       },
       "id": "extract-message",
       "name": "Extract Message",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
       "position": [450, 300]
     },
     {
@@ -102,22 +156,70 @@
     },
     {
       "parameters": {
-        "functionCode": "// Build Gemini prompt for intent classification\nconst userText = $input.item.json.text;\nconst isCallback = $input.item.json.is_callback;\n\nconst systemPrompt = `You are an intent classifier for a task management assistant.\n\nAnalyze the user message and output STRICT JSON:\n{\n  \"intent\": \"draft_task\" | \"confirm_draft\" | \"cancel_draft\" | \"edit_draft\" | \"unknown\",\n  \"parameters\": {\n    \"task_description\": \"string\",\n    \"mentioned_due_date\": \"YYYY-MM-DD or null\",\n    \"priority_indicators\": [\"urgent\", \"important\", etc] or []\n  },\n  \"confidence\": 0.0-1.0\n}\n\nRules:\n- Never guess dates if not explicitly mentioned\n- Return \"unknown\" intent if unclear\n- For callback buttons (✅/✏️/❌), extract the action\n- Current date context: ${new Date().toISOString().split('T')[0]}\n\nUser message: ${userText}`;\n\nreturn {\n  gemini_prompt: systemPrompt,\n  ...($input.item.json)\n};"
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "gemini_prompt",
+              "name": "gemini_prompt",
+              "value": "=You are an intent classifier for a task management assistant.\n\nAnalyze the user message and output STRICT JSON:\n{\n  \"intent\": \"draft_task\" | \"confirm_draft\" | \"cancel_draft\" | \"edit_draft\" | \"unknown\",\n  \"parameters\": {\n    \"task_description\": \"string\",\n    \"mentioned_due_date\": \"YYYY-MM-DD or null\",\n    \"priority_indicators\": [\"urgent\", \"important\", etc] or []\n  },\n  \"confidence\": 0.0-1.0\n}\n\nRules:\n- Never guess dates if not explicitly mentioned\n- Return \"unknown\" intent if unclear\n- For callback buttons (✅/✏️/❌), extract the action\n- Current date context: {{ $now.toFormat('yyyy-MM-dd') }}\n\nUser message: {{ $json.text }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
       },
       "id": "build-prompt",
       "name": "Build Gemini Prompt",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
       "position": [1050, 300]
     },
     {
       "parameters": {
-        "functionCode": "// Parse Gemini response and prepare command payload\nconst geminiResponse = $input.item.json.candidates[0].content.parts[0].text;\nconst intent = JSON.parse(geminiResponse);\n\n// Map intent to command type\nconst intentMap = {\n  'draft_task': 'draft_task_from_text',\n  'confirm_draft': 'confirm_draft',\n  'cancel_draft': 'cancel_draft',\n  'edit_draft': 'edit_draft',\n  'unknown': 'unknown'\n};\n\nconst commandType = intentMap[intent.intent] || 'unknown';\n\n// Build command payload\nconst payload = {\n  intent: intent.intent,\n  original_text: $node['Extract Message'].json.text,\n  parameters: intent.parameters,\n  telegram_message_id: $node['Extract Message'].json.telegram_message_id,\n  telegram_chat_id: $node['Extract Message'].json.telegram_chat_id,\n  confidence: intent.confidence,\n  timestamp: new Date().toISOString()\n};\n\nreturn {\n  command_type: commandType,\n  user_id: $node['Extract Message'].json.user_id,\n  payload_json: JSON.stringify(payload),\n  telegram_chat_id: $node['Extract Message'].json.telegram_chat_id\n};"
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "intent_data",
+              "name": "intent_data",
+              "value": "={{ JSON.parse($json.candidates[0].content.parts[0].text) }}",
+              "type": "object"
+            },
+            {
+              "id": "command_type",
+              "name": "command_type",
+              "value": "={{ $json.intent_data.intent === 'draft_task' ? 'draft_task_from_text' : ($json.intent_data.intent === 'confirm_draft' ? 'confirm_draft' : ($json.intent_data.intent === 'cancel_draft' ? 'cancel_draft' : ($json.intent_data.intent === 'edit_draft' ? 'edit_draft' : 'unknown'))) }}",
+              "type": "string"
+            },
+            {
+              "id": "user_id",
+              "name": "user_id",
+              "value": "={{ $node['Extract Message'].json.user_id }}",
+              "type": "string"
+            },
+            {
+              "id": "payload_json",
+              "name": "payload_json",
+              "value": "={{ JSON.stringify({\n  intent: $json.intent_data.intent,\n  original_text: $node['Extract Message'].json.text,\n  parameters: $json.intent_data.parameters,\n  telegram_message_id: $node['Extract Message'].json.telegram_message_id,\n  telegram_chat_id: $node['Extract Message'].json.telegram_chat_id,\n  confidence: $json.intent_data.confidence,\n  timestamp: $now.toISO()\n}) }}",
+              "type": "string"
+            },
+            {
+              "id": "telegram_chat_id",
+              "name": "telegram_chat_id",
+              "value": "={{ $node['Extract Message'].json.telegram_chat_id }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
       },
       "id": "parse-intent",
       "name": "Parse Intent",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
       "position": [1250, 200]
     },
     {

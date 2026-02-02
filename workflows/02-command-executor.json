@@ -77,12 +77,54 @@
     },
     {
       "parameters": {
-        "functionCode": "// Parse command payload and prepare for routing\nconst command = $input.item.json;\nconst payload = JSON.parse(command.payload_json);\n\nreturn {\n  command_id: command.id,\n  command_type: command.type,\n  user_id: command.user_id,\n  payload: payload,\n  telegram_chat_id: payload.telegram_chat_id,\n  telegram_message_id: payload.telegram_message_id\n};"
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "command_id",
+              "name": "command_id",
+              "value": "={{ $json.id }}",
+              "type": "number"
+            },
+            {
+              "id": "command_type",
+              "name": "command_type",
+              "value": "={{ $json.type }}",
+              "type": "string"
+            },
+            {
+              "id": "user_id",
+              "name": "user_id",
+              "value": "={{ $json.user_id }}",
+              "type": "string"
+            },
+            {
+              "id": "payload",
+              "name": "payload",
+              "value": "={{ JSON.parse($json.payload_json) }}",
+              "type": "object"
+            },
+            {
+              "id": "telegram_chat_id",
+              "name": "telegram_chat_id",
+              "value": "={{ JSON.parse($json.payload_json).telegram_chat_id }}",
+              "type": "string"
+            },
+            {
+              "id": "telegram_message_id",
+              "name": "telegram_message_id",
+              "value": "={{ JSON.parse($json.payload_json).telegram_message_id }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
       },
       "id": "parse-command",
       "name": "Parse Command",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
       "position": [1050, 200]
     },
     {
@@ -146,22 +188,82 @@
     },
     {
       "parameters": {
-        "functionCode": "// Handle cancel_draft command\nconst payload = $input.item.json.payload;\n\n// Extract draft ID from callback data or recent draft\nconst draftId = payload.parameters?.draft_id;\n\nif (!draftId) {\n  return {\n    success: false,\n    error: 'No draft ID provided'\n  };\n}\n\nreturn {\n  draft_id: draftId,\n  telegram_chat_id: $input.item.json.telegram_chat_id,\n  success: true\n};"
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "draft_id",
+              "name": "draft_id",
+              "value": "={{ $json.payload.parameters?.draft_id }}",
+              "type": "number"
+            },
+            {
+              "id": "telegram_chat_id",
+              "name": "telegram_chat_id",
+              "value": "={{ $json.telegram_chat_id }}",
+              "type": "string"
+            },
+            {
+              "id": "success",
+              "name": "success",
+              "value": "={{ !!$json.payload.parameters?.draft_id }}",
+              "type": "boolean"
+            },
+            {
+              "id": "error",
+              "name": "error",
+              "value": "={{ $json.payload.parameters?.draft_id ? null : 'No draft ID provided' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
       },
       "id": "handle-cancel",
       "name": "Handle Cancel",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
       "position": [1450, 300]
     },
     {
       "parameters": {
-        "functionCode": "// Handle edit_draft command\nconst payload = $input.item.json.payload;\n\nreturn {\n  draft_id: payload.parameters?.draft_id,\n  edit_text: payload.parameters?.edit_text,\n  telegram_chat_id: $input.item.json.telegram_chat_id,\n  success: true\n};"
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "draft_id",
+              "name": "draft_id",
+              "value": "={{ $json.payload.parameters?.draft_id }}",
+              "type": "number"
+            },
+            {
+              "id": "edit_text",
+              "name": "edit_text",
+              "value": "={{ $json.payload.parameters?.edit_text }}",
+              "type": "string"
+            },
+            {
+              "id": "telegram_chat_id",
+              "name": "telegram_chat_id",
+              "value": "={{ $json.telegram_chat_id }}",
+              "type": "string"
+            },
+            {
+              "id": "success",
+              "name": "success",
+              "value": true,
+              "type": "boolean"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
       },
       "id": "handle-edit",
       "name": "Handle Edit",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
       "position": [1450, 400]
     },
     {

@@ -11,22 +11,82 @@
     },
     {
       "parameters": {
-        "functionCode": "// Extract command data\nconst command = $input.item.json;\nconst payload = command.payload || command;\n\nreturn {\n  user_id: command.user_id || 'default_user',\n  task_description: payload.parameters?.task_description || payload.original_text,\n  mentioned_due_date: payload.parameters?.mentioned_due_date,\n  priority_indicators: payload.parameters?.priority_indicators || [],\n  telegram_chat_id: payload.telegram_chat_id,\n  telegram_message_id: payload.telegram_message_id,\n  current_date: new Date().toISOString().split('T')[0]\n};"
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "user_id",
+              "name": "user_id",
+              "value": "={{ $json.user_id || 'default_user' }}",
+              "type": "string"
+            },
+            {
+              "id": "task_description",
+              "name": "task_description",
+              "value": "={{ ($json.payload || $json).parameters?.task_description || ($json.payload || $json).original_text }}",
+              "type": "string"
+            },
+            {
+              "id": "mentioned_due_date",
+              "name": "mentioned_due_date",
+              "value": "={{ ($json.payload || $json).parameters?.mentioned_due_date }}",
+              "type": "string"
+            },
+            {
+              "id": "priority_indicators",
+              "name": "priority_indicators",
+              "value": "={{ ($json.payload || $json).parameters?.priority_indicators || [] }}",
+              "type": "array"
+            },
+            {
+              "id": "telegram_chat_id",
+              "name": "telegram_chat_id",
+              "value": "={{ ($json.payload || $json).telegram_chat_id }}",
+              "type": "string"
+            },
+            {
+              "id": "telegram_message_id",
+              "name": "telegram_message_id",
+              "value": "={{ ($json.payload || $json).telegram_message_id }}",
+              "type": "string"
+            },
+            {
+              "id": "current_date",
+              "name": "current_date",
+              "value": "={{ $now.toFormat('yyyy-MM-dd') }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
       },
       "id": "extract-data",
       "name": "Extract Command Data",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
       "position": [450, 300]
     },
     {
       "parameters": {
-        "functionCode": "// Build Gemini prompt for task structuring\nconst data = $input.item.json;\n\nconst prompt = `You are a task planning assistant.\n\nOriginal request: ${data.task_description}\nMentioned due date: ${data.mentioned_due_date || 'none'}\nPriority indicators: ${data.priority_indicators.join(', ') || 'none'}\nCurrent date: ${data.current_date}\n\nOutput STRICT JSON:\n{\n  \"title\": \"string (clear, actionable task title, max 100 chars)\",\n  \"due_date\": \"YYYY-MM-DD or null\",\n  \"due_date_reasoning\": \"string (explain if suggested or user-mentioned)\",\n  \"notes\": \"string (additional context, optional)\",\n  \"suggested_subtasks\": [\n    {\"title\": \"string\", \"estimated_effort\": \"S|M|L\"}\n  ],\n  \"clarification_needed\": \"string or null (ask ONE question if critical info missing)\"\n}\n\nRules:\n- Temperature: 0.3\n- If due date mentioned, validate it's in the future\n- Suggest realistic subtasks (max 5, only if task is complex)\n- Keep title concise and actionable\n- Only ask for clarification if absolutely necessary\n- Effort levels: S (< 30 min), M (30min - 2hr), L (> 2hr)`;\n\nreturn {\n  gemini_prompt: prompt,\n  ...data\n};"
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "gemini_prompt",
+              "name": "gemini_prompt",
+              "value": "=You are a task planning assistant.\n\nOriginal request: {{ $json.task_description }}\nMentioned due date: {{ $json.mentioned_due_date || 'none' }}\nPriority indicators: {{ $json.priority_indicators.join(', ') || 'none' }}\nCurrent date: {{ $json.current_date }}\n\nOutput STRICT JSON:\n{\n  \"title\": \"string (clear, actionable task title, max 100 chars)\",\n  \"due_date\": \"YYYY-MM-DD or null\",\n  \"due_date_reasoning\": \"string (explain if suggested or user-mentioned)\",\n  \"notes\": \"string (additional context, optional)\",\n  \"suggested_subtasks\": [\n    {\"title\": \"string\", \"estimated_effort\": \"S|M|L\"}\n  ],\n  \"clarification_needed\": \"string or null (ask ONE question if critical info missing)\"\n}\n\nRules:\n- Temperature: 0.3\n- If due date mentioned, validate it's in the future\n- Suggest realistic subtasks (max 5, only if task is complex)\n- Keep title concise and actionable\n- Only ask for clarification if absolutely necessary\n- Effort levels: S (< 30 min), M (30min - 2hr), L (> 2hr)",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
       },
       "id": "build-task-prompt",
       "name": "Build Task Structuring Prompt",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
       "position": [650, 300]
     },
     {
@@ -56,12 +116,54 @@
     },
     {
       "parameters": {
-        "functionCode": "// Parse Gemini response\nconst response = $input.item.json;\nconst taskData = JSON.parse(response.candidates[0].content.parts[0].text);\n\nconst prevData = $node['Extract Command Data'].json;\n\n// Build draft JSON\nconst draftJson = {\n  title: taskData.title,\n  due_date: taskData.due_date,\n  due_date_reasoning: taskData.due_date_reasoning,\n  notes: taskData.notes || '',\n  suggested_subtasks: taskData.suggested_subtasks || [],\n  priority_indicators: prevData.priority_indicators,\n  source: 'gemini_structured'\n};\n\nreturn {\n  draft_json: JSON.stringify(draftJson),\n  user_id: prevData.user_id,\n  telegram_chat_id: prevData.telegram_chat_id,\n  telegram_message_id: prevData.telegram_message_id,\n  clarification_needed: taskData.clarification_needed,\n  task_data: taskData\n};"
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "task_data",
+              "name": "task_data",
+              "value": "={{ JSON.parse($json.candidates[0].content.parts[0].text) }}",
+              "type": "object"
+            },
+            {
+              "id": "draft_json",
+              "name": "draft_json",
+              "value": "={{ JSON.stringify({\n  title: $json.task_data.title,\n  due_date: $json.task_data.due_date,\n  due_date_reasoning: $json.task_data.due_date_reasoning,\n  notes: $json.task_data.notes || '',\n  suggested_subtasks: $json.task_data.suggested_subtasks || [],\n  priority_indicators: $node['Extract Command Data'].json.priority_indicators,\n  source: 'gemini_structured'\n}) }}",
+              "type": "string"
+            },
+            {
+              "id": "user_id",
+              "name": "user_id",
+              "value": "={{ $node['Extract Command Data'].json.user_id }}",
+              "type": "string"
+            },
+            {
+              "id": "telegram_chat_id",
+              "name": "telegram_chat_id",
+              "value": "={{ $node['Extract Command Data'].json.telegram_chat_id }}",
+              "type": "string"
+            },
+            {
+              "id": "telegram_message_id",
+              "name": "telegram_message_id",
+              "value": "={{ $node['Extract Command Data'].json.telegram_message_id }}",
+              "type": "string"
+            },
+            {
+              "id": "clarification_needed",
+              "name": "clarification_needed",
+              "value": "={{ $json.task_data.clarification_needed }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
       },
       "id": "parse-task",
       "name": "Parse Task Structure",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
       "position": [1050, 300]
     },
     {
@@ -128,12 +230,48 @@
     },
     {
       "parameters": {
-        "functionCode": "// Format confirmation message\nconst taskData = $node['Parse Task Structure'].json.task_data;\nconst draftId = $input.item.json.lastID;\n\n// Format due date\nlet dueDateText = 'No due date';\nif (taskData.due_date) {\n  const date = new Date(taskData.due_date);\n  const options = { month: 'short', day: 'numeric', year: 'numeric' };\n  dueDateText = date.toLocaleDateString('en-US', options);\n  if (taskData.due_date_reasoning) {\n    dueDateText += ` (${taskData.due_date_reasoning})`;\n  }\n}\n\n// Format subtasks\nlet subtasksText = '';\nif (taskData.suggested_subtasks && taskData.suggested_subtasks.length > 0) {\n  subtasksText = '\\n\\nSuggested subtasks:';\n  taskData.suggested_subtasks.forEach(st => {\n    subtasksText += `\\n • ${st.title} (${st.estimated_effort})`;\n  });\n}\n\n// Build message\nconst message = `📝 Task Draft:\\n\\nTitle: ${taskData.title}\\nDue: ${dueDateText}${taskData.notes ? '\\nNotes: ' + taskData.notes : ''}${subtasksText}`;\n\nreturn {\n  draft_id: draftId,\n  message: message,\n  telegram_chat_id: $node['Parse Task Structure'].json.telegram_chat_id\n};"
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "draft_id",
+              "name": "draft_id",
+              "value": "={{ $json.lastID }}",
+              "type": "number"
+            },
+            {
+              "id": "due_date_text",
+              "name": "due_date_text",
+              "value": "={{ $node['Parse Task Structure'].json.task_data.due_date ? (DateTime.fromISO($node['Parse Task Structure'].json.task_data.due_date).toFormat('MMM d, yyyy') + ($node['Parse Task Structure'].json.task_data.due_date_reasoning ? ' (' + $node['Parse Task Structure'].json.task_data.due_date_reasoning + ')' : '')) : 'No due date' }}",
+              "type": "string"
+            },
+            {
+              "id": "subtasks_text",
+              "name": "subtasks_text",
+              "value": "={{ $node['Parse Task Structure'].json.task_data.suggested_subtasks?.length > 0 ? ('\\n\\nSuggested subtasks:\\n' + $node['Parse Task Structure'].json.task_data.suggested_subtasks.map(st => ' • ' + st.title + ' (' + st.estimated_effort + ')').join('\\n')) : '' }}",
+              "type": "string"
+            },
+            {
+              "id": "message",
+              "name": "message",
+              "value": "={{ '📝 Task Draft:\\n\\nTitle: ' + $node['Parse Task Structure'].json.task_data.title + '\\nDue: ' + $json.due_date_text + ($node['Parse Task Structure'].json.task_data.notes ? '\\nNotes: ' + $node['Parse Task Structure'].json.task_data.notes : '') + $json.subtasks_text }}",
+              "type": "string"
+            },
+            {
+              "id": "telegram_chat_id",
+              "name": "telegram_chat_id",
+              "value": "={{ $node['Parse Task Structure'].json.telegram_chat_id }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
       },
       "id": "format-message",
       "name": "Format Confirmation Message",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
       "position": [1650, 200]
     },
     {
